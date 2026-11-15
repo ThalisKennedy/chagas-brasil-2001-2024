@@ -1,0 +1,1273 @@
+# =============================================================================
+# Repositório: Doença de Chagas no Brasil, 2001-2024 (dissertação FMUSP)
+# Arquivo original: SIM/DOBR - CHAGAS/DOBR - CHAGAS - PARTE 3.1_2.R
+# Ajuste para o repositório: caminhos absolutos trocados por caminhos
+# relativos à pasta 'dados/' (ver 00_configuracao.R). Blocos acrescentados
+# estão marcados com "# ---" e explicados no comentário que os abre.
+# =============================================================================
+source(here::here("00_configuracao.R"))
+# Pasta de trabalho usada na execução original (projeto do RStudio):
+setwd(file.path(DIR_DADOS, "SIM/DOBR - CHAGAS"))
+
+# Base de entrada (na execução original, importada pelo menu do RStudio):
+if (!exists("MORT_CHAGAS_PRE_PROCESSAMENTO_2")) MORT_CHAGAS_PRE_PROCESSAMENTO_2 <- haven::read_dta(file.path(DIR_DADOS, "SIM/MORT_CHAGAS_PRE_PROCESSAMENTO_2.dta"))
+
+library(tidyverse)
+library(writexl)
+library(lubridate)
+library(gtsummary)
+library(flextable)
+library(officer)
+library(forcats)
+library(haven)
+library(stringr)
+library(readr)
+library(gt)
+library(prais)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggrepel)
+
+names(MORT_CHAGAS_PRE_PROCESSAMENTO_2) <- toupper(names(MORT_CHAGAS_PRE_PROCESSAMENTO_2))
+
+vars_para_manter <- c("DTOBITO", "DTNASC", "IDADE", "SEXO", "RACACOR", "ESTCIV", "NATURAL", "CODMUNNATU",
+                       "ESC",  "OCUP", "CODMUNRES", "CODMUNOCOR", "ASSISTMED", "EXAME", "CIRURGIA", "LOCOCOR", 
+                       "NECROPSIA", "LINHAA", "LINHAB", "LINHAC", "LINHAD", "LINHAII", "CAUSABAS", "ATESTADO", 
+                       "TPPOS", "CHAGAS_MENCAO", "TIPO_MENCAO", "FONTEINV")
+
+MORT_CHAGAS_LIMPO <- MORT_CHAGAS_PRE_PROCESSAMENTO_2 %>% select(any_of(vars_para_manter))
+
+vars_auditoria <- c("DTOBITO", "DTNASC", "IDADE", "SEXO", "RACACOR", "ESTCIV", "NATURAL", "CODMUNNATU",
+                    "ESC",  "OCUP", "CODMUNRES", "CODMUNOCOR", "ASSISTMED", "EXAME", "CIRURGIA", "LOCOCOR",
+                    "NECROPSIA", "LINHAA", "LINHAB", "LINHAC", "LINHAD", "LINHAII", "CAUSABAS", 
+                    "ATESTADO", "TPPOS", "FONTEINV")
+
+TABELA_QUALIDADE <- MORT_CHAGAS_LIMPO %>%
+  summarise(across(all_of(vars_auditoria), list(
+    
+    PCT_EM_BRANCO = ~ mean(is.na(.) | as.character(.) == "") * 100,
+    
+    PCT_IGNORADO_CODIGO = ~ mean(as.character(.) %in% c("9", "99", "0", "Ignorado"), na.rm = TRUE) * 100
+  ))) %>%
+  pivot_longer(everything(), names_to = "Indicador", values_to = "Valor") %>%
+  separate(Indicador, into = c("Variavel", "Tipo_Erro", "Metrica"), sep = "_", extra = "merge")
+
+print(TABELA_QUALIDADE)
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_LIMPO %>%
+  mutate(
+    DATA_OBITO = dmy(DTOBITO), 
+    
+    DATA_NASC  = dmy(DTNASC),
+    
+    idade_fracionada = time_length(interval(DATA_NASC, DATA_OBITO), "years"),
+    
+    IDADE_OBITO = floor(idade_fracionada)
+    
+  ) 
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    ANO_OBITO = year(DATA_OBITO)
+    
+  ) 
+
+MORT_CHAGAS_TRATADO %>%
+  select(DTOBITO, DTNASC, DATA_OBITO, DATA_NASC, IDADE_OBITO, ANO_OBITO) %>%
+  head()
+
+erros_conversao <- MORT_CHAGAS_TRATADO %>%
+  filter(is.na(DATA_OBITO) & !is.na(DTOBITO)) %>%
+  select(DTOBITO, DATA_OBITO)
+
+count(erros_conversao)
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  select(-IDADE, -idade_fracionada, -DTOBITO, -DTNASC)
+
+glimpse(MORT_CHAGAS_TRATADO)
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    SEXO_TEMP = str_trim(as.character(SEXO)),
+    
+    SEXO = case_when(
+      SEXO_TEMP == "1" ~ "Masculino",
+      SEXO_TEMP == "2" ~ "Feminino",
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+    SEXO = factor(SEXO, levels = c("Masculino", "Feminino", "Ignorado/Em branco"))
+  )
+    
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    RACA_TEMP = as.numeric(RACACOR),
+    RACA_TEMP = replace_na(RACA_TEMP, 9),
+    RACACOR = factor(RACA_TEMP,
+                     levels = c(1, 2, 3, 4, 5, 9),
+                     labels = c("Branca", "Preta", "Amarela", "Parda", "Indígena", "Ignorado/Em branco"))
+  ) %>%
+  select(-SEXO_TEMP, -RACA_TEMP)
+
+table(MORT_CHAGAS_TRATADO$SEXO, useNA = "always")
+table(MORT_CHAGAS_TRATADO$RACACOR, useNA = "always")
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    ESTCIV_TEMP = as.numeric(ESTCIV),
+    ESTCIV_TEMP = replace_na(ESTCIV_TEMP, 9),
+    ESTCIV_TEMP = if_else(ESTCIV_TEMP == 0, 9, ESTCIV_TEMP),
+    ESTADO_CIVIL = factor(ESTCIV_TEMP,
+                          levels = c(1, 2, 3, 4, 5, 9),
+                          labels = c("Solteiro", 
+                                     "Casado", 
+                                     "Viúvo", 
+                                     "Separado/Divorciado", 
+                                     "União Estável", 
+                                     "Ignorado/Em branco"))
+  ) %>%
+  select(-ESTCIV_TEMP)
+
+table(MORT_CHAGAS_TRATADO$ESTADO_CIVIL, useNA = "always")
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    FAIXA_ETARIA = cut(IDADE_OBITO, 
+                       breaks = c(0, 46, 60, 75, Inf),
+                       labels = c("0 a 45 anos", 
+                                  "46 a 59 anos", 
+                                  "60 a 74 anos", 
+                                  "75 anos ou mais"),
+                       right = FALSE)
+  )
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    FAIXA_ETARIA = as.character(FAIXA_ETARIA),
+    FAIXA_ETARIA = replace_na(FAIXA_ETARIA, "Ignorado/Em branco"),
+    FAIXA_ETARIA = factor(FAIXA_ETARIA, 
+                          levels = c("0 a 45 anos", 
+                                     "46 a 59 anos", 
+                                     "60 a 74 anos", 
+                                     "75 anos ou mais", 
+                                     "Ignorado/Em branco"))
+  )
+
+table(MORT_CHAGAS_TRATADO$FAIXA_ETARIA, useNA = "always")
+
+round(prop.table(table(MORT_CHAGAS_TRATADO$SEXO)) * 100, 2)
+round(prop.table(table(MORT_CHAGAS_TRATADO$FAIXA_ETARIA)) * 100, 2)
+round(prop.table(table(MORT_CHAGAS_TRATADO$RACACOR)) * 100, 2)
+
+summary(MORT_CHAGAS_TRATADO$IDADE_OBITO)
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  select(-ESTCIV)
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    CODMUNRES = substr(as.character(CODMUNRES), 1, 6),
+    
+    CODMUNOCOR = substr(as.character(CODMUNOCOR), 1, 6)
+
+    )
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    COD_UF_TEMP = case_when(
+      !is.na(CODMUNNATU) & 
+        nchar(as.character(CODMUNNATU)) >= 2 & 
+        !substr(as.character(CODMUNNATU), 1, 2) %in% c("00", "99") ~ substr(as.character(CODMUNNATU), 1, 2),
+      
+      !is.na(NATURAL) & 
+        substr(as.character(NATURAL), 1, 1) == "8" & 
+        nchar(as.character(NATURAL)) >= 3 ~ substr(as.character(NATURAL), 2, 3),
+      
+      !is.na(NATURAL) & 
+        nchar(as.character(NATURAL)) >= 2 &
+        !substr(as.character(NATURAL), 1, 2) %in% c("00", "80", "99") ~ substr(as.character(NATURAL), 1, 2),
+      
+      TRUE ~ NA_character_
+    ),
+    
+    UF_NASCIMENTO = case_when(
+      COD_UF_TEMP == "11" ~ "Rondônia",
+      COD_UF_TEMP == "12" ~ "Acre",
+      COD_UF_TEMP == "13" ~ "Amazonas",
+      COD_UF_TEMP == "14" ~ "Roraima",
+      COD_UF_TEMP == "15" ~ "Pará",
+      COD_UF_TEMP == "16" ~ "Amapá",
+      COD_UF_TEMP == "17" ~ "Tocantins",
+      COD_UF_TEMP == "21" ~ "Maranhão",
+      COD_UF_TEMP == "22" ~ "Piauí",
+      COD_UF_TEMP == "23" ~ "Ceará",
+      COD_UF_TEMP == "24" ~ "Rio Grande do Norte",
+      COD_UF_TEMP == "25" ~ "Paraíba",
+      COD_UF_TEMP == "26" ~ "Pernambuco",
+      COD_UF_TEMP == "27" ~ "Alagoas",
+      COD_UF_TEMP == "28" ~ "Sergipe",
+      COD_UF_TEMP == "29" ~ "Bahia",
+      COD_UF_TEMP == "31" ~ "Minas Gerais",
+      COD_UF_TEMP == "32" ~ "Espírito Santo",
+      COD_UF_TEMP == "33" ~ "Rio de Janeiro",
+      COD_UF_TEMP == "35" ~ "São Paulo",
+      COD_UF_TEMP == "41" ~ "Paraná",
+      COD_UF_TEMP == "42" ~ "Santa Catarina",
+      COD_UF_TEMP == "43" ~ "Rio Grande do Sul",
+      COD_UF_TEMP == "50" ~ "Mato Grosso do Sul",
+      COD_UF_TEMP == "51" ~ "Mato Grosso",
+      COD_UF_TEMP == "52" ~ "Goiás",
+      COD_UF_TEMP == "53" ~ "Distrito Federal",
+      
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+    REGIAO_NASCIMENTO = case_when(
+      substr(COD_UF_TEMP, 1, 1) == "1" ~ "Norte",
+      substr(COD_UF_TEMP, 1, 1) == "2" ~ "Nordeste",
+      substr(COD_UF_TEMP, 1, 1) == "3" ~ "Sudeste",
+      substr(COD_UF_TEMP, 1, 1) == "4" ~ "Sul",
+      substr(COD_UF_TEMP, 1, 1) == "5" ~ "Centro-Oeste",
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+    REGIAO_NASCIMENTO = factor(REGIAO_NASCIMENTO, 
+                               levels = c("Sudeste", "Centro-Oeste", "Nordeste",  "Sul", "Norte", "Ignorado/Em branco"))
+  ) %>%
+  
+  select(-COD_UF_TEMP)
+
+table(MORT_CHAGAS_TRATADO$REGIAO_NASCIMENTO, useNA = "always")
+head(sort(table(MORT_CHAGAS_TRATADO$UF_NASCIMENTO), decreasing = TRUE), 10)
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    COD_UF_RESID = substr(as.character(CODMUNRES), 1, 2),
+    
+    UF_RESIDENCIA = case_when(
+      COD_UF_RESID == "11" ~ "Rondônia",
+      COD_UF_RESID == "12" ~ "Acre",
+      COD_UF_RESID == "13" ~ "Amazonas",
+      COD_UF_RESID == "14" ~ "Roraima",
+      COD_UF_RESID == "15" ~ "Pará",
+      COD_UF_RESID == "16" ~ "Amapá",
+      COD_UF_RESID == "17" ~ "Tocantins",
+      COD_UF_RESID == "21" ~ "Maranhão",
+      COD_UF_RESID == "22" ~ "Piauí",
+      COD_UF_RESID == "23" ~ "Ceará",
+      COD_UF_RESID == "24" ~ "Rio Grande do Norte",
+      COD_UF_RESID == "25" ~ "Paraíba",
+      COD_UF_RESID == "26" ~ "Pernambuco",
+      COD_UF_RESID == "27" ~ "Alagoas",
+      COD_UF_RESID == "28" ~ "Sergipe",
+      COD_UF_RESID == "29" ~ "Bahia",
+      COD_UF_RESID == "31" ~ "Minas Gerais",
+      COD_UF_RESID == "32" ~ "Espírito Santo",
+      COD_UF_RESID == "33" ~ "Rio de Janeiro",
+      COD_UF_RESID == "35" ~ "São Paulo",
+      COD_UF_RESID == "41" ~ "Paraná",
+      COD_UF_RESID == "42" ~ "Santa Catarina",
+      COD_UF_RESID == "43" ~ "Rio Grande do Sul",
+      COD_UF_RESID == "50" ~ "Mato Grosso do Sul",
+      COD_UF_RESID == "51" ~ "Mato Grosso",
+      COD_UF_RESID == "52" ~ "Goiás",
+      COD_UF_RESID == "53" ~ "Distrito Federal",
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+    REGIAO_RESIDENCIA = case_when(
+      substr(COD_UF_RESID, 1, 1) == "1" ~ "Norte",
+      substr(COD_UF_RESID, 1, 1) == "2" ~ "Nordeste",
+      substr(COD_UF_RESID, 1, 1) == "3" ~ "Sudeste",
+      substr(COD_UF_RESID, 1, 1) == "4" ~ "Sul",
+      substr(COD_UF_RESID, 1, 1) == "5" ~ "Centro-Oeste",
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+    COD_UF_NASC_TEMP = case_when(
+      !is.na(CODMUNNATU) & 
+        nchar(as.character(CODMUNNATU)) >= 2 & 
+        !substr(as.character(CODMUNNATU), 1, 2) %in% c("00", "99") ~ substr(as.character(CODMUNNATU), 1, 2),
+      
+      !is.na(NATURAL) & 
+        substr(as.character(NATURAL), 1, 1) == "8" & 
+        nchar(as.character(NATURAL)) >= 3 ~ substr(as.character(NATURAL), 2, 3),
+      
+      !is.na(NATURAL) & 
+        nchar(as.character(NATURAL)) >= 2 &
+        !substr(as.character(NATURAL), 1, 2) %in% c("00", "80", "99") ~ substr(as.character(NATURAL), 1, 2),
+      
+      TRUE ~ NA_character_
+      ),
+    
+    MIGRANTE = case_when(
+      is.na(COD_UF_NASC_TEMP) | is.na(COD_UF_RESID) ~ "Ignorado/Em branco",
+      COD_UF_NASC_TEMP != COD_UF_RESID ~ "Sim",
+      COD_UF_NASC_TEMP == COD_UF_RESID ~ "Não",
+      TRUE ~ "Ignorado/Em branco"
+    )
+  ) %>%
+  select(-COD_UF_RESID, -COD_UF_NASC_TEMP)
+
+table(MORT_CHAGAS_TRATADO$REGIAO_RESIDENCIA)
+
+table(MORT_CHAGAS_TRATADO$REGIAO_NASCIMENTO)
+
+table(MORT_CHAGAS_TRATADO$MIGRANTE)
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  select(-NATURAL, -CODMUNNATU)
+
+tabela_verificacao <- table(MORT_CHAGAS_TRATADO$CHAGAS_MENCAO, useNA = "always")
+print(tabela_verificacao)
+print(round(prop.table(tabela_verificacao) * 100, 2))
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>% select(-CHAGAS_MENCAO)
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    TIPO_MENCAO = zap_labels(TIPO_MENCAO),
+    
+    TIPO_MENCAO = factor(TIPO_MENCAO,
+                         levels = c(1, 2),
+                         labels = c("Causa Básica", "Causa Associada"))
+  )
+
+table(MORT_CHAGAS_TRATADO$TIPO_MENCAO)
+
+round(prop.table(table(MORT_CHAGAS_TRATADO$TIPO_MENCAO)) * 100, 2)
+
+MORT_CHAGAS_ASSOCIADA <- MORT_CHAGAS_TRATADO %>%
+  filter(TIPO_MENCAO == "Causa Associada")
+
+RANKING_CAUSABAS_ASSOCIADA <- MORT_CHAGAS_ASSOCIADA %>%
+  mutate(CAUSABAS_LIMPA = str_remove_all(str_to_upper(CAUSABAS), "[^A-Z0-9]")) %>%
+  
+  count(CAUSABAS_LIMPA, sort = TRUE) %>%
+  
+  mutate(
+    PERCENTUAL = round((n / sum(n)) * 100, 2)) %>%
+  head(20)
+
+print(RANKING_CAUSABAS_ASSOCIADA)
+
+MORT_CHAGAS_ASSOCIADA <- MORT_CHAGAS_ASSOCIADA %>%
+  mutate(
+      GRUPO_CAUSABAS = case_when(
+        str_detect(CAUSABAS, "^I2[0-5]") ~ "Doenças Isquêmicas do Coração (I20-I25)",
+        
+        str_detect(CAUSABAS, "^I6") ~ "Doenças Cerebrovasculares (I60-I69)",
+
+        str_detect(CAUSABAS, "^J09|^J1[0-8]|^J2[0-2]|^B342|^U07") ~ "Infecções Respiratórias Agudas e COVID-19 (J09-J18, U07)",
+        
+        str_detect(CAUSABAS, "^C|^D[0-4]") ~ "Neoplasias (C00-D48)",
+        
+        str_detect(CAUSABAS, "^I1[0-5]") ~ "Doenças Hipertensivas (I10-I15)",
+        
+        TRUE ~ "Outras Causas"
+    )
+  )
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    DIAGNOSTICO_COMPLETO = paste(
+      as.character(CAUSABAS),
+      as.character(LINHAA),
+      as.character(LINHAB),
+      as.character(LINHAC),
+      as.character(LINHAD),
+      as.character(LINHAII),
+      as.character(ATESTADO),
+      sep = " "
+    ),
+    
+    DIAGNOSTICO_COMPLETO = str_to_upper(DIAGNOSTICO_COMPLETO),
+   
+    DIAGNOSTICO_LIMPO = str_remove_all(DIAGNOSTICO_COMPLETO, "[^A-Z0-9]"),
+    
+    FASE_DOENCA = case_when(
+      str_detect(DIAGNOSTICO_LIMPO, "B570") ~ "Aguda", 
+      str_detect(DIAGNOSTICO_LIMPO, "B571") ~ "Aguda",
+      TRUE ~ "Crônica"
+    ),
+    
+    FORMA_CLINICA = case_when(
+      (str_detect(DIAGNOSTICO_LIMPO, "B570|B572|I412|I981") & 
+         str_detect(DIAGNOSTICO_LIMPO, "B573|K231|K931")) | 
+        str_detect(DIAGNOSTICO_LIMPO, "B575") ~ "Mista (Cardíaca + Digestiva)",
+      
+      str_detect(DIAGNOSTICO_LIMPO, "B573|K231|K931") ~ "Digestiva",
+      
+      str_detect(DIAGNOSTICO_LIMPO, "B574") ~ "Nervosa",
+      
+      str_detect(DIAGNOSTICO_LIMPO, "B570|B572|I412|I981") ~ "Cardíaca",
+      
+      str_detect(DIAGNOSTICO_LIMPO, "B571") ~ "Não Especificada/Indeterminada",
+      
+      TRUE ~ "Não Especificada/Indeterminada"
+    )
+  ) %>%
+  
+  select(-DIAGNOSTICO_COMPLETO, -DIAGNOSTICO_LIMPO) %>%
+  
+  mutate(
+    FASE_DOENCA = factor(FASE_DOENCA, levels = c("Aguda", "Crônica")),
+    
+    FORMA_CLINICA = factor(FORMA_CLINICA, 
+                           levels = c("Cardíaca", 
+                                      "Digestiva", 
+                                      "Mista (Cardíaca + Digestiva)",
+                                      "Nervosa",
+                                      "Não Especificada/Indeterminada"))
+  )
+
+table(MORT_CHAGAS_TRATADO$FORMA_CLINICA, useNA = "always")
+
+table(MORT_CHAGAS_TRATADO$TIPO_MENCAO, MORT_CHAGAS_TRATADO$FORMA_CLINICA)
+
+table(MORT_CHAGAS_TRATADO$FASE_DOENCA, useNA = "always")
+
+round(prop.table(table(MORT_CHAGAS_TRATADO$FASE_DOENCA)) * 100, 3)
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    DIAG_TEMP = paste(as.character(CAUSABAS), as.character(LINHAA), as.character(LINHAB), 
+                      as.character(LINHAC), as.character(LINHAD), as.character(LINHAII), 
+                      sep = " "),
+    DIAG_TEMP = str_to_upper(DIAG_TEMP),
+    DIAG_TEMP = str_remove_all(DIAG_TEMP, "[^A-Z0-9]"), 
+
+    TEM_HIPERTENSAO = if_else(str_detect(DIAG_TEMP, "I10|I11|I12|I13|I14|I15"), 1, 0),
+    TEM_DIABETES    = if_else(str_detect(DIAG_TEMP, "E10|E11|E12|E13|E14"), 1, 0),
+    TEM_ISQUEMICA   = if_else(str_detect(DIAG_TEMP, "I20|I21|I22|I23|I24|I25"), 1, 0),
+    TEM_AVC         = if_else(str_detect(DIAG_TEMP, "I60|I61|I62|I63|I64|I69"), 1, 0),
+    TEM_NEOPLASIA   = if_else(str_detect(DIAG_TEMP, "C[0-9]"), 1, 0),
+    TEM_RENAL       = if_else(str_detect(DIAG_TEMP, "N17|N18|N19"), 1, 0),
+
+    QTD_COMORBIDADES = TEM_HIPERTENSAO + TEM_DIABETES + TEM_ISQUEMICA + TEM_AVC + TEM_NEOPLASIA + TEM_RENAL,
+    
+    PERFIL_COMORBIDADE = case_when(
+      QTD_COMORBIDADES == 0 ~ "Nenhuma Identificada",
+      QTD_COMORBIDADES == 1 ~ "Uma Comorbidade",
+      QTD_COMORBIDADES >= 2 ~ "Multimorbidade (2 ou mais)",
+      TRUE ~ "Ignorado/Em branco"
+    )
+  ) %>%
+  
+  mutate(
+    RESUMO_CLINICO = paste0(
+      if_else(TEM_HIPERTENSAO == 1, "HAS ", ""),
+      if_else(TEM_DIABETES == 1, "DM ", ""),
+      if_else(TEM_ISQUEMICA == 1, "DAC ", ""),
+      if_else(TEM_AVC == 1, "AVC ", ""),
+      if_else(TEM_NEOPLASIA == 1, "Câncer ", ""),
+      if_else(TEM_RENAL == 1, "DRC ", "")
+    ),
+    RESUMO_CLINICO = str_trim(RESUMO_CLINICO), 
+    RESUMO_CLINICO = if_else(RESUMO_CLINICO == "", "Sem Comorbidades Principais", RESUMO_CLINICO)
+  )
+
+table(MORT_CHAGAS_TRATADO$PERFIL_COMORBIDADE)
+round(prop.table(table(MORT_CHAGAS_TRATADO$PERFIL_COMORBIDADE))*100, 2)
+
+head(sort(table(MORT_CHAGAS_TRATADO$RESUMO_CLINICO), decreasing = TRUE), 10)
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    DIAG_VARREDURA = paste(
+      as.character(CAUSABAS), 
+      if("LINHAA" %in% names(.)) as.character(LINHAA) else "",
+      if("LINHAB" %in% names(.)) as.character(LINHAB) else "",
+      if("LINHAC" %in% names(.)) as.character(LINHAC) else "",
+      if("LINHAD" %in% names(.)) as.character(LINHAD) else "",
+      if("LINHAII" %in% names(.)) as.character(LINHAII) else "",
+      sep = " "
+    ),
+    
+    DIAG_VARREDURA = str_remove_all(str_to_upper(DIAG_VARREDURA), "[^A-Z0-9]"),
+    
+    CID_CHAGAS_ENCONTRADO = case_when(
+      (str_detect(DIAG_VARREDURA, "B570|B572|I412|I981") & 
+         str_detect(DIAG_VARREDURA, "B573|K231|K931")) | 
+        str_detect(DIAG_VARREDURA, "B575") ~ "Forma Mista (Cardíaca + Digestiva)",
+      
+      str_detect(DIAG_VARREDURA, "K231") ~ "K23.1 - Megaesôfago",
+      str_detect(DIAG_VARREDURA, "K931") ~ "K93.1 - Megacólon",
+      str_detect(DIAG_VARREDURA, "B573") ~ "B57.3 - Forma Digestiva",
+      
+      str_detect(DIAG_VARREDURA, "B570") ~ "B57.0 - Aguda Cardíaca",
+      str_detect(DIAG_VARREDURA, "I412") ~ "I41.2 - Miocardite Chagásica",
+      str_detect(DIAG_VARREDURA, "I981") ~ "I98.1 - Transtornos Cardiovasc.",
+      str_detect(DIAG_VARREDURA, "B572") ~ "B57.2 - Crônica Cardíaca",
+      
+      str_detect(DIAG_VARREDURA, "B574") ~ "B57.4 - Forma Nervosa",
+      
+      str_detect(DIAG_VARREDURA, "B571") ~ "B57.1 - Aguda s/ comprometimento",
+      str_detect(DIAG_VARREDURA, "B57")  ~ "B57 - Chagas não especificado",
+      
+      TRUE ~ "Sem menção específica de CID Chagas"
+    )
+  ) %>%
+  select(-DIAG_VARREDURA)
+
+count(MORT_CHAGAS_TRATADO, CID_CHAGAS_ENCONTRADO, sort = TRUE) %>%
+  mutate(Percentual = round(n / sum(n) * 100, 2))
+
+limpar_texto_uf <- function(texto) {
+  texto <- str_to_upper(as.character(texto)) 
+  texto <- iconv(texto, to = "ASCII//TRANSLIT")
+  texto <- str_replace_all(texto, "[^A-Z]", "") 
+  return(texto)
+}
+
+MORT_CHAGAS_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    COD_UF_RESID_NUM = substr(as.character(CODMUNRES), 1, 2),
+    COD_REGIAO_RESID_NUM = substr(as.character(CODMUNRES), 1, 1),
+    
+    UF_NASC_TEMP = limpar_texto_uf(UF_NASCIMENTO),
+    
+    COD_UF_NASC_NUM = case_when(
+      UF_NASC_TEMP %in% c("RONDONIA", "RO") ~ "11",
+      UF_NASC_TEMP %in% c("ACRE", "AC") ~ "12",
+      UF_NASC_TEMP %in% c("AMAZONAS", "AM") ~ "13",
+      UF_NASC_TEMP %in% c("RORAIMA", "RR") ~ "14",
+      UF_NASC_TEMP %in% c("PARA", "PA") ~ "15",
+      UF_NASC_TEMP %in% c("AMAPA", "AP") ~ "16",
+      UF_NASC_TEMP %in% c("TOCANTINS", "TO") ~ "17",
+      UF_NASC_TEMP %in% c("MARANHAO", "MA") ~ "21",
+      UF_NASC_TEMP %in% c("PIAUI", "PI") ~ "22",
+      UF_NASC_TEMP %in% c("CEARA", "CE") ~ "23",
+      UF_NASC_TEMP %in% c("RIOGRANDEDONORTE", "RN") ~ "24",
+      UF_NASC_TEMP %in% c("PARAIBA", "PB") ~ "25",
+      UF_NASC_TEMP %in% c("PERNAMBUCO", "PE") ~ "26",
+      UF_NASC_TEMP %in% c("ALAGOAS", "AL") ~ "27",
+      UF_NASC_TEMP %in% c("SERGIPE", "SE") ~ "28",
+      UF_NASC_TEMP %in% c("BAHIA", "BA") ~ "29",
+      UF_NASC_TEMP %in% c("MINASGERAIS", "MG") ~ "31",
+      UF_NASC_TEMP %in% c("ESPIRITOSANTO", "ES") ~ "32",
+      UF_NASC_TEMP %in% c("RIODEJANEIRO", "RJ") ~ "33",
+      UF_NASC_TEMP %in% c("SAOPAULO", "SP") ~ "35",
+      UF_NASC_TEMP %in% c("PARANA", "PR") ~ "41",
+      UF_NASC_TEMP %in% c("SANTACATARINA", "SC") ~ "42",
+      UF_NASC_TEMP %in% c("RIOGRANDEDOSUL", "RS") ~ "43",
+      UF_NASC_TEMP %in% c("MATOGROSSODOSUL", "MS") ~ "50",
+      UF_NASC_TEMP %in% c("MATOGROSSO", "MT") ~ "51",
+      UF_NASC_TEMP %in% c("GOIAS", "GO") ~ "52",
+      UF_NASC_TEMP %in% c("DISTRITOFEDERAL", "DF") ~ "53",
+      TRUE ~ NA_character_ 
+    ),
+    
+    COD_REGIAO_NASC_NUM = substr(COD_UF_NASC_NUM, 1, 1),
+    
+    CLASSIFICACAO_MIGRATORIA = case_when(
+      is.na(COD_UF_NASC_NUM) | is.na(COD_UF_RESID_NUM) ~ "Ignorado/Em branco",
+      
+      COD_REGIAO_NASC_NUM != COD_REGIAO_RESID_NUM ~ "Migrante Interregional",
+      
+      COD_UF_NASC_NUM != COD_UF_RESID_NUM ~ "Migrante Interestadual",
+      
+      COD_UF_NASC_NUM == COD_UF_RESID_NUM ~ "Não Migrante",
+      
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+    CLASSIFICACAO_MIGRATORIA = factor(CLASSIFICACAO_MIGRATORIA,
+                                      levels = c("Não Migrante",
+                                                 "Migrante Interestadual",
+                                                 "Migrante Interregional",
+                                                 "Ignorado/Em branco"))
+  ) %>%
+  
+  select(-COD_UF_RESID_NUM, -COD_REGIAO_RESID_NUM, 
+         -COD_UF_NASC_NUM, -COD_REGIAO_NASC_NUM, -UF_NASC_TEMP)
+
+table(MORT_CHAGAS_TRATADO$CLASSIFICACAO_MIGRATORIA, useNA = "ifany")
+
+round(prop.table(table(MORT_CHAGAS_TRATADO$CLASSIFICACAO_MIGRATORIA)) * 100, 2)
+
+MORT_CHAGAS_2_TRATADO <- MORT_CHAGAS_TRATADO %>%
+  mutate(
+    ESCOLARIDADE = case_when(
+      IDADE_OBITO < 5 ~ "Não se aplica",
+      as.character(ESC) == "1" ~ "Nenhuma",
+      as.character(ESC) %in% c("2", "3") ~ "1 a 7 anos",
+      as.character(ESC) == "4" ~ "8 a 11 anos",
+      as.character(ESC) == "5" ~ "12 anos ou mais",
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+    ESCOLARIDADE = factor(ESCOLARIDADE, 
+                          levels = c("Nenhuma", "1 a 7 anos", 
+                                     "8 a 11 anos", "12 anos ou mais", 
+                                     "Não se aplica", "Ignorado/Em branco")),
+    
+  ) %>%
+  
+    select(
+  
+    everything(),
+    
+    -ESC, -DIAG_TEMP, -MIGRANTE, -ATESTADO, -LINHAA, -LINHAB, -LINHAC, -LINHAD, -LINHAII, -CAUSABAS
+  )
+
+print(table(MORT_CHAGAS_2_TRATADO$ESCOLARIDADE))
+
+MORT_CHAGAS_2_TRATADO <- MORT_CHAGAS_2_TRATADO %>%
+  mutate(
+    TPPOS_LIMPO = str_trim(as.character(TPPOS)),
+    
+    STATUS_INVESTIGACAO_2006 = case_when(
+      TPPOS_LIMPO == "S" ~ "Sim, foi Investigado",
+      TPPOS_LIMPO == "N" ~ "Não Investigado",
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+      STATUS_INVESTIGACAO_2006 = factor(STATUS_INVESTIGACAO_2006, 
+                                 levels = c("Sim, foi Investigado", 
+                                            "Não Investigado", 
+                                            "Ignorado/Em branco"))
+  ) %>%
+  
+  select(-TPPOS, -TPPOS_LIMPO)
+
+table(MORT_CHAGAS_2_TRATADO$FASE_DOENCA, MORT_CHAGAS_2_TRATADO$STATUS_INVESTIGACAO_2006)
+
+
+prop.table(table(MORT_CHAGAS_2_TRATADO$FASE_DOENCA, MORT_CHAGAS_2_TRATADO$STATUS_INVESTIGACAO_2006), margin = 1) %>%
+  round(4) * 100
+
+MORT_CHAGAS_2_TRATADO <- MORT_CHAGAS_2_TRATADO %>%
+  mutate(
+    ANO_OBITO = year(DATA_OBITO))
+
+table(MORT_CHAGAS_2_TRATADO$ANO_OBITO, useNA = "always")
+
+glimpse(MORT_CHAGAS_2_TRATADO %>% select(ASSISTMED, EXAME, CIRURGIA, NECROPSIA))
+
+MORT_CHAGAS_2_TRATADO <- MORT_CHAGAS_2_TRATADO %>%
+  mutate(across(c(
+    ASSISTMED, EXAME, CIRURGIA, NECROPSIA), ~ case_when(
+    as.character(.) == "1" ~ "Sim",
+    as.character(.) == "2" ~ "Não",
+    as.character(.) == "9" ~ "Ignorado/Em branco",
+    as.character(.) == "Ignorado" ~ "Ignorado/Em branco",
+    is.na(.) | as.character(.) == "" ~ "Ignorado/Em branco", 
+    TRUE ~ "Ignorado/Em branco"
+  ))) %>%
+  mutate(across(c(
+    ASSISTMED, EXAME, CIRURGIA, NECROPSIA), 
+                ~ factor(., levels = c("Sim", "Não", "Ignorado/Em branco"))))
+
+verificar_qualidade <- function(coluna) {
+  tabela <- table(coluna, useNA = "always")
+  prop <- round(prop.table(tabela) * 100, 1)
+  return(prop)
+}
+
+print(verificar_qualidade(MORT_CHAGAS_2_TRATADO$ASSISTMED))
+
+print(verificar_qualidade(MORT_CHAGAS_2_TRATADO$EXAME))
+
+print(verificar_qualidade(MORT_CHAGAS_2_TRATADO$CIRURGIA))
+
+print(verificar_qualidade(MORT_CHAGAS_2_TRATADO$NECROPSIA))
+
+MORT_CHAGAS_2_TRATADO <- MORT_CHAGAS_2_TRATADO %>%
+  mutate(
+    LOCOCOR_TEMP = as.character(LOCOCOR),
+    
+    LOCAL_OCORRENCIA = case_when(
+      LOCOCOR_TEMP == "1" ~ "Hospital",
+      LOCOCOR_TEMP == "2" ~ "Outros Estabelecimento de Saúde",
+      LOCOCOR_TEMP == "3" ~ "Domicílio",
+      LOCOCOR_TEMP == "4" ~ "Via Pública",
+      LOCOCOR_TEMP == "5" ~ "Outros",
+      
+      LOCOCOR_TEMP %in% c("9", "0") | is.na(LOCOCOR_TEMP) ~ "Ignorado/Em branco",
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+    LOCAL_OCORRENCIA = factor(LOCAL_OCORRENCIA, 
+                              levels = c("Hospital", 
+                                         "Domicílio", 
+                                         "Outros Estabelecimento de Saúde", 
+                                         "Via Pública", 
+                                         "Outros", 
+                                         "Ignorado/Em branco"))
+  )
+
+print(count(MORT_CHAGAS_2_TRATADO, LOCAL_OCORRENCIA) %>% 
+        mutate(Percent = round(n/sum(n)*100, 2)))
+
+MORT_CHAGAS_2_TRATADO <- MORT_CHAGAS_2_TRATADO %>%
+  mutate(
+    COD_MUN_RES_F = str_pad(as.character(CODMUNRES), width = 6, pad = "0", side = "left"),
+    COD_MUN_OCOR_F = str_pad(as.character(CODMUNOCOR), width = 6, pad = "0", side = "left"),
+    
+    COD_UF_RES = substr(COD_MUN_RES_F, 1, 2),
+    COD_UF_OCOR = substr(COD_MUN_OCOR_F, 1, 2),
+    
+    COD_REG_RES = substr(COD_MUN_RES_F, 1, 1),
+    COD_REG_OCOR = substr(COD_MUN_OCOR_F, 1, 1),
+    
+    FLUXO_ASSISTENCIA = case_when(
+      is.na(CODMUNRES) | is.na(CODMUNOCOR) ~ "Ignorado/Em branco",
+      COD_MUN_RES_F == "000000" | COD_MUN_OCOR_F == "000000" ~ "Ignorado/Em branco",
+      
+      COD_MUN_RES_F == COD_MUN_OCOR_F ~ "Sem Deslocamento",
+      
+      (COD_MUN_RES_F != COD_MUN_OCOR_F) & (COD_UF_RES == COD_UF_OCOR) ~ "Deslocamento Intermunicipal",
+      
+      (COD_UF_RES != COD_UF_OCOR) & (COD_REG_RES == COD_REG_OCOR) ~ "Deslocamento Interestadual",
+      
+      COD_REG_RES != COD_REG_OCOR ~ "Deslocamento Interregional",
+      
+      TRUE ~ "Ignorado/Em branco"
+    )
+  ) %>%
+
+  mutate(FLUXO_ASSISTENCIA = factor(FLUXO_ASSISTENCIA, 
+                                    levels = c("Sem Deslocamento",
+                                               "Deslocamento Intermunicipal",
+                                               "Deslocamento Interestadual",
+                                               "Deslocamento Interregional",
+                                               "Ignorado/Em branco")))
+
+print(count(MORT_CHAGAS_2_TRATADO, FLUXO_ASSISTENCIA) %>% 
+        mutate(Percent = round(n/sum(n)*100, 2)))
+
+MORT_CHAGAS_3_TRATADO <- MORT_CHAGAS_2_TRATADO %>%
+  select(
+    -CODMUNOCOR,
+    -LOCOCOR,
+    -COD_MUN_RES_F, 
+    -COD_MUN_OCOR_F, 
+    -COD_UF_RES, 
+    -COD_UF_OCOR, 
+    -COD_REG_RES, 
+    -COD_REG_OCOR,
+    -LOCOCOR_TEMP
+  )
+
+glimpse(MORT_CHAGAS_3_TRATADO)
+
+MORT_CHAGAS_3_TRATADO <- MORT_CHAGAS_3_TRATADO %>%
+  mutate(
+    OCUP_TEMP = str_remove_all(as.character(OCUP), "[^0-9]"),
+    
+    PRIMEIRO_DIGITO = substr(OCUP_TEMP, 1, 1),
+    
+    GRANDE_GRUPO_OCUP = case_when(
+      is.na(OCUP) | OCUP_TEMP %in% c("000000", "999999", "99999", "0", "") ~ "Ignorado/Em branco",
+      
+      OCUP_TEMP %in% c("999991", "999992", "999994") ~ "Inativos/Sem Ocupação",
+      OCUP_TEMP == "999993" ~ "Aposentado/Pensionista",
+      
+      ANO_OBITO <= 2005 & PRIMEIRO_DIGITO %in% c("0", "1") ~ "Profissionais das Ciências e Artes",
+      ANO_OBITO <= 2005 & PRIMEIRO_DIGITO == "2" ~ "Membros Superiores/Dirigentes",
+      ANO_OBITO <= 2005 & PRIMEIRO_DIGITO == "3" ~ "Serviços Administrativos",
+      ANO_OBITO <= 2005 & PRIMEIRO_DIGITO == "4" ~ "Trabalhadores de Serviços/Comércio",
+      ANO_OBITO <= 2005 & PRIMEIRO_DIGITO == "5" ~ "Trabalhadores de Serviços/Comércio",
+      ANO_OBITO <= 2005 & PRIMEIRO_DIGITO == "6" ~ "Trabalhadores Agropecuários/Florestais/Pesca",
+      ANO_OBITO <= 2005 & PRIMEIRO_DIGITO %in% c("7", "8", "9") ~ "Trabalhadores da Produção Industrial",
+      
+      ANO_OBITO >= 2006 & PRIMEIRO_DIGITO == "0" ~ "Membros das Forças Armadas/Polícia/Bombeiros",
+      ANO_OBITO >= 2006 & PRIMEIRO_DIGITO == "1" ~ "Membros Superiores/Dirigentes/Poder Público",
+      ANO_OBITO >= 2006 & PRIMEIRO_DIGITO == "2" ~ "Profissionais das Ciências e Artes",
+      ANO_OBITO >= 2006 & PRIMEIRO_DIGITO == "3" ~ "Técnicos de Nível Médio",
+      ANO_OBITO >= 2006 & PRIMEIRO_DIGITO == "4" ~ "Serviços Administrativos",
+      ANO_OBITO >= 2006 & PRIMEIRO_DIGITO == "5" ~ "Trabalhadores de Serviços/Comércio",
+      ANO_OBITO >= 2006 & PRIMEIRO_DIGITO == "6" ~ "Trabalhadores Agropecuários/Florestais/Pesca", 
+      ANO_OBITO >= 2006 & PRIMEIRO_DIGITO %in% c("7", "8", "9") ~ "Trabalhadores da Produção Industrial",
+      
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+    PERFIL_OCUPACIONAL = case_when(
+      GRANDE_GRUPO_OCUP == "Trabalhadores Agropecuários/Florestais/Pesca" ~ "Agropecuário/Rural",
+      
+      GRANDE_GRUPO_OCUP %in% c("Membros Superiores/Dirigentes/Poder Público", 
+                               "Membros Superiores/Dirigentes",
+                               "Profissionais das Ciências e Artes", 
+                               "Técnicos de Nível Médio") ~ "Não Manual/Intelectual/Técnico",
+      
+      GRANDE_GRUPO_OCUP %in% c("Serviços Administrativos", 
+                               "Trabalhadores de Serviços/Comércio", 
+                               "Trabalhadores da Produção Industrial", 
+                               "Membros das Forças Armadas/Polícia/Bombeiros") ~ "Manual Urbano/Serviços/Industrial",
+      
+      GRANDE_GRUPO_OCUP == "Aposentado/Pensionista" ~ "Aposentado/Pensionista",
+      GRANDE_GRUPO_OCUP == "Inativos/Sem Ocupação" ~ "Inativos/Sem Ocupação",
+      
+      TRUE ~ "Ignorado/Em branco"
+    )
+  ) %>%
+  
+  select(-OCUP_TEMP, -PRIMEIRO_DIGITO) %>%
+  
+  mutate(
+    PERFIL_OCUPACIONAL = factor(PERFIL_OCUPACIONAL,
+                                levels = c("Aposentado/Pensionista",
+                                           "Manual Urbano/Serviços/Industrial",
+                                           "Agropecuário/Rural",
+                                           "Não Manual/Intelectual/Técnico",
+                                           "Inativos/Sem Ocupação",
+                                           "Ignorado/Em branco"))
+  )
+
+count(MORT_CHAGAS_3_TRATADO, GRANDE_GRUPO_OCUP) %>%
+  mutate(Percentual = round(n/sum(n)*100, 2)) %>%
+  print()
+
+count(MORT_CHAGAS_3_TRATADO, PERFIL_OCUPACIONAL) %>%
+  mutate(Percentual = round(n/sum(n)*100, 2)) %>%
+  print()
+
+MORT_CHAGAS_FINAL_TRATADO <- MORT_CHAGAS_3_TRATADO %>%
+  select(-OCUP)
+
+MORT_CHAGAS_FINAL_TRATADO <- MORT_CHAGAS_FINAL_TRATADO %>%
+  mutate(
+    FONTE_INVESTIGACAO_2006 = case_when(
+      
+      ANO_OBITO < 2006 ~ "Não se aplica",
+      
+      FONTEINV == "1" ~ "Comitê de Morte Materna ou Infantil",
+      FONTEINV == "2" ~ "Visita domiciliar ou Entrevista familiar",
+      FONTEINV == "3" ~ "Estabelecimento de Saúde ou Prontuário",
+      FONTEINV %in% c("5", "6") ~ "Órgãos Médico-Legais (SVO ou IML)",
+      FONTEINV %in% c("4", "7", "8") ~ "Outras fontes de investigação",
+      FONTEINV == "9" ~ "Ignorado/Em branco",
+      
+      STATUS_INVESTIGACAO_2006 == "Sim, foi Investigado" &
+        (is.na(FONTEINV) | FONTEINV == "") ~
+        "Fonte não informada",
+      
+      STATUS_INVESTIGACAO_2006 == "Não Investigado" ~
+        "Não se aplica",
+      
+      TRUE ~ "Ignorado/Em branco"
+    ),
+    
+    FONTE_INVESTIGACAO_2006 = factor(
+      FONTE_INVESTIGACAO_2006,
+      levels = c(
+        "Estabelecimento de Saúde ou Prontuário",
+        "Órgãos Médico-Legais (SVO ou IML)",
+        "Comitê de Morte Materna ou Infantil",
+        "Visita domiciliar ou Entrevista familiar",
+        "Outras fontes de investigação",
+        "Fonte não informada",
+        "Não se aplica",
+        "Ignorado/Em branco"
+      )
+    )
+  )
+
+table(MORT_CHAGAS_FINAL_TRATADO$STATUS_INVESTIGACAO_2006,
+      MORT_CHAGAS_FINAL_TRATADO$FONTE_INVESTIGACAO_2006)
+
+round(prop.table(table(MORT_CHAGAS_FINAL_TRATADO$TIPO_MENCAO, MORT_CHAGAS_FINAL_TRATADO$FONTE_INVESTIGACAO_2006))*100, 2)
+
+table(MORT_CHAGAS_FINAL_TRATADO$TIPO_MENCAO, MORT_CHAGAS_FINAL_TRATADO$FONTE_INVESTIGACAO_2006)
+
+table(MORT_CHAGAS_TRATADO$TIPO_MENCAO, MORT_CHAGAS_TRATADO$CID_CHAGAS_ENCONTRADO)
+
+table(MORT_CHAGAS_TRATADO$FASE_DOENCA, MORT_CHAGAS_TRATADO$TPPOS)
+
+table(MORT_CHAGAS_TRATADO$FASE_DOENCA)
+
+round(prop.table(table(MORT_CHAGAS_TRATADO$FASE_DOENCA, MORT_CHAGAS_TRATADO$TPPOS))*100, 2)
+
+table(MORT_CHAGAS_ASSOCIADA$GRUPO_CAUSABAS)
+
+round(prop.table(table(MORT_CHAGAS_ASSOCIADA$GRUPO_CAUSABAS))*100, 2)
+
+caminho_dados <- paste0(file.path(DIR_DADOS, "IBGE/IBGE_POP_2001_2024"), "/")
+
+pop_padrao_br2022 <- readRDS(paste0(caminho_dados, "pop_padrao_br2022.rds"))
+
+POP_IBGE_TRATADA <- readRDS(paste0(caminho_dados, "POP_IBGE_TRATADA.rds"))
+
+obitos_tipo <- MORT_CHAGAS_FINAL_TRATADO %>%
+  filter(!is.na(IDADE_OBITO)) %>%
+  mutate(
+    
+    FAIXA_QUINQUENAL = cut(IDADE_OBITO, 
+                           breaks = c(seq(0, 80, by = 5), Inf),
+                           labels = pop_padrao_br2022$FAIXA_QUINQUENAL,
+                           right = FALSE)
+  ) %>%
+  
+  group_by(ANO_OBITO, FAIXA_QUINQUENAL, TIPO_MENCAO) %>%
+  
+  summarise(obitos = n(), .groups = 'drop')
+
+obitos_total <- obitos_tipo %>%
+  group_by(ANO_OBITO, FAIXA_QUINQUENAL) %>%
+  summarise(obitos = sum(obitos), .groups = 'drop') %>%
+  mutate(TIPO_MENCAO = "Mortalidade Total (Básica + Associada)")
+
+df_obitos <- bind_rows(obitos_tipo, obitos_total)
+
+df_taxas <- df_obitos %>%
+  complete(ANO_OBITO, FAIXA_QUINQUENAL, TIPO_MENCAO, fill = list(obitos = 0)) %>%
+  
+  left_join(POP_IBGE_TRATADA, by = c("ANO_OBITO", "FAIXA_QUINQUENAL")) %>%
+  left_join(pop_padrao_br2022, by = "FAIXA_QUINQUENAL") %>%
+  
+  replace_na(list(obitos = 0))
+
+df_taxas_padronizadas <- df_taxas %>%
+  mutate(taxa_especifica = (obitos / populacao_residente) * 100000) %>%
+  mutate(obitos_esperados = (taxa_especifica * peso_pop_padrao) / 100000) %>%
+  group_by(ANO_OBITO, TIPO_MENCAO) %>%
+  summarise(
+    casos_totais = sum(obitos, na.rm = TRUE),
+    pop_total = sum(populacao_residente, na.rm = TRUE),
+    
+    taxa_bruta = (casos_totais / pop_total) * 100000,
+    se_bruta = (sqrt(casos_totais) / pop_total) * 100000,
+    
+    taxa_padronizada = (sum(obitos_esperados, na.rm = TRUE) / sum(peso_pop_padrao, na.rm = TRUE)) * 100000,
+    se_padronizada = sqrt(sum(
+      (peso_pop_padrao / sum(peso_pop_padrao, na.rm = TRUE))^2 * if_else(populacao_residente == 0, 0, obitos / (populacao_residente^2)), 
+      na.rm = TRUE
+    )) * 100000,
+    
+    .groups = 'drop'
+  ) %>%
+  mutate(TIPO_MENCAO = factor(TIPO_MENCAO, levels = c("Mortalidade Total (Básica + Associada)", 
+                                                      "Causa Básica", 
+                                                      "Causa Associada")))
+
+limite_maximo <- max(c(df_taxas_padronizadas$taxa_padronizada, 
+                       df_taxas_padronizadas$taxa_bruta), na.rm = TRUE)
+
+grafico_4 <- ggplot(df_taxas_padronizadas, aes(x = ANO_OBITO, y = taxa_padronizada, 
+                                               color = TIPO_MENCAO, shape = TIPO_MENCAO)) +
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 3) +
+  
+  geom_text_repel(aes(label = format(round(taxa_padronizada, 1), nsmall = 1, decimal.mark = ",")),
+                  size = 2.8,            
+                  fontface = "bold", 
+                  show.legend = FALSE,
+                  direction = "y",        
+                  box.padding = 0.4,     
+                  point.padding = 0.2,   
+                  min.segment.length = 0.5) + 
+  
+  scale_color_manual(values = c("Mortalidade Total (Básica + Associada)" = "#009E73",
+                                "Causa Básica" = "#D55E00", 
+                                "Causa Associada" = "#0072B2")) +
+  
+  scale_y_continuous(limits = c(0, limite_maximo * 1.05), 
+                     expand = expansion(mult = c(0, 0.05)),
+                     labels = function(x) format(x, decimal.mark = ",", scientific = FALSE)) +
+
+  scale_x_continuous(breaks = seq(2001, 2024, by = 1)) +
+  
+  labs(title = NULL, subtitle = NULL, x = NULL, y = NULL, caption = NULL,
+       color = "Classificação:", shape = "Classificação:") +
+  
+  theme_minimal() +
+  theme(
+    text = element_text(family = "sans"),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold", size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(), 
+    axis.line = element_line(color = "black"), 
+    axis.ticks = element_line(color = "black")
+  )
+
+print(grafico_4)
+
+grafico_bruto <- ggplot(df_taxas_padronizadas, aes(x = ANO_OBITO, y = taxa_bruta, 
+                                                   color = TIPO_MENCAO, shape = TIPO_MENCAO)) +
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 3) +
+  
+  geom_text_repel(aes(label = format(round(taxa_bruta, 1), nsmall = 1, decimal.mark = ",")),
+                  size = 2.8,            
+                  fontface = "bold", 
+                  show.legend = FALSE,
+                  direction = "y",        
+                  box.padding = 0.4,     
+                  point.padding = 0.2,   
+                  min.segment.length = 0.5) + 
+  
+  scale_color_manual(values = c("Mortalidade Total (Básica + Associada)" = "#009E73",
+                                "Causa Básica" = "#D55E00", 
+                                "Causa Associada" = "#0072B2")) +
+  scale_y_continuous(limits = c(0, limite_maximo * 1.05), 
+                     expand = expansion(mult = c(0, 0.05)),
+                     labels = function(x) format(x, decimal.mark = ",", scientific = FALSE)) +
+  
+  scale_x_continuous(breaks = seq(2001, 2024, by = 1)) +
+  
+  labs(title = NULL, subtitle = NULL, x = NULL, y = NULL, caption = NULL,
+       color = "Classificação:", shape = "Classificação:") +
+  
+  theme_minimal() +
+  theme(
+    text = element_text(family = "sans"),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold", size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.line = element_line(color = "black"), 
+    axis.ticks = element_line(color = "black")
+    )
+
+print(grafico_bruto)
+
+setdiff(unique(df_obitos$FAIXA_QUINQUENAL),
+        unique(POP_IBGE_TRATADA$FAIXA_QUINQUENAL))
+
+summary(df_taxas$populacao_residente)
+
+POP_IBGE_REGIAO_TRATADA <- readRDS(paste0(caminho_dados, "POP_IBGE_REGIÃO_TRATADA.rds"))
+
+obitos_regioes <- MORT_CHAGAS_FINAL_TRATADO %>%
+  filter(!is.na(IDADE_OBITO), !is.na(REGIAO_RESIDENCIA), REGIAO_RESIDENCIA != "Ignorado/Em branco") %>%
+  mutate(
+    FAIXA_QUINQUENAL = cut(IDADE_OBITO, 
+                           breaks = c(seq(0, 80, by = 5), Inf),
+                           labels = pop_padrao_br2022$FAIXA_QUINQUENAL,
+                           right = FALSE)
+  ) %>%
+  group_by(ANO_OBITO, FAIXA_QUINQUENAL, REGIAO_RESIDENCIA) %>%
+  summarise(obitos = n(), .groups = 'drop')
+
+obitos_brasil <- MORT_CHAGAS_FINAL_TRATADO %>%
+  filter(!is.na(IDADE_OBITO)) %>%
+  mutate(
+    FAIXA_QUINQUENAL = cut(IDADE_OBITO, 
+                           breaks = c(seq(0, 80, by = 5), Inf),
+                           labels = pop_padrao_br2022$FAIXA_QUINQUENAL,
+                           right = FALSE)
+  ) %>%
+  group_by(ANO_OBITO, FAIXA_QUINQUENAL) %>%
+  summarise(obitos = n(), .groups = 'drop') %>%
+  mutate(REGIAO_RESIDENCIA = "Brasil")
+
+df_obitos_geo <- bind_rows(obitos_regioes, obitos_brasil)
+
+pop_brasil <- POP_IBGE_TRATADA %>% 
+  group_by(ANO_OBITO, FAIXA_QUINQUENAL) %>%
+  summarise(populacao_residente = sum(populacao_residente, na.rm=TRUE), .groups = 'drop') %>%
+  mutate(REGIAO_RESIDENCIA = "Brasil")
+
+pop_regioes <- POP_IBGE_REGIAO_TRATADA %>%
+  rename_with(~"REGIAO_RESIDENCIA", any_of(c("REGIAO", "Regiao", "regiao"))) 
+
+pop_completa_geo <- bind_rows(pop_regioes, pop_brasil)
+
+df_taxas_geo <- df_obitos_geo %>%
+  complete(ANO_OBITO, FAIXA_QUINQUENAL, REGIAO_RESIDENCIA, fill = list(obitos = 0)) %>%
+  left_join(pop_completa_geo, by = c("ANO_OBITO", "FAIXA_QUINQUENAL", "REGIAO_RESIDENCIA")) %>%
+  left_join(pop_padrao_br2022, by = "FAIXA_QUINQUENAL") %>%
+  replace_na(list(obitos = 0))
+
+df_taxas_padronizadas_geo <- df_taxas_geo %>%
+  mutate(taxa_especifica = (obitos / populacao_residente) * 100000) %>%
+  mutate(obitos_esperados = (taxa_especifica * peso_pop_padrao) / 100000) %>%
+  group_by(ANO_OBITO, REGIAO_RESIDENCIA) %>%
+  summarise(
+    casos_totais = sum(obitos, na.rm = TRUE),
+    pop_total = sum(populacao_residente, na.rm = TRUE),
+    
+    taxa_bruta = (casos_totais / pop_total) * 100000,
+    se_bruta = (sqrt(casos_totais) / pop_total) * 100000,
+    
+    taxa_padronizada = (sum(obitos_esperados, na.rm = TRUE) / sum(peso_pop_padrao, na.rm = TRUE)) * 100000,
+    se_padronizada = sqrt(sum(
+      (peso_pop_padrao / sum(peso_pop_padrao, na.rm = TRUE))^2 * if_else(populacao_residente == 0, 0, obitos / (populacao_residente^2)), 
+      na.rm = TRUE
+    )) * 100000,
+    
+    .groups = 'drop'
+  ) %>%
+  mutate(REGIAO_RESIDENCIA = factor(REGIAO_RESIDENCIA, 
+                                    levels = c("Brasil", "Norte", "Nordeste", 
+                                               "Sudeste", "Sul", "Centro-Oeste")))
+
+limite_maximo_geo <- max(c(df_taxas_padronizadas_geo$taxa_padronizada, 
+                           df_taxas_padronizadas_geo$taxa_bruta), na.rm = TRUE)
+
+cores_geo <- c("Brasil" = "#000000",       
+               "Norte" = "#1b9e77",        
+               "Nordeste" = "#d95f02",     
+               "Sudeste" = "#7570b3",      
+               "Sul" = "#e7298a",          
+               "Centro-Oeste" = "#00A0B0")
+
+shapes_geo <- c("Brasil" = 16, "Norte" = 15, "Nordeste" = 17, 
+                "Sudeste" = 18, "Sul" = 8, "Centro-Oeste" = 4)
+
+tipos_linha_geo <- c("Brasil" = "solid",       
+                     "Norte" = "dotted",        
+                     "Nordeste" = "dotted",     
+                     "Sudeste" = "dotted",      
+                     "Sul" = "solid",          
+                     "Centro-Oeste" = "solid")
+
+grafico_padronizado_geo <- ggplot(df_taxas_padronizadas_geo, 
+                                  aes(x = ANO_OBITO, y = taxa_padronizada, 
+                                      color = REGIAO_RESIDENCIA, 
+                                      shape = REGIAO_RESIDENCIA,
+                                      linetype = REGIAO_RESIDENCIA)) + 
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 3) +
+  
+  scale_color_manual(values = cores_geo) +
+  scale_shape_manual(values = shapes_geo) +
+  scale_linetype_manual(values = tipos_linha_geo) +
+  
+  scale_y_continuous(limits = c(0, limite_maximo_geo * 1.05), 
+                     expand = expansion(mult = c(0, 0.05)),
+                     labels = function(x) format(x, decimal.mark = ",", scientific = FALSE)) +
+  
+  scale_x_continuous(breaks = seq(2001, 2024, by = 1)) +
+  
+  labs(title = NULL, subtitle = NULL, x = NULL, y = NULL, caption = NULL,
+       color = "Localidade:", shape = "Localidade:", linetype = "Localidade:") +
+  
+  theme_minimal() +
+  theme(
+    text = element_text(family = "sans"),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold", size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(), 
+    axis.line = element_line(color = "black"), 
+    axis.ticks = element_line(color = "black"),
+    legend.key.width = unit(2, "cm")
+  )
+
+print(grafico_padronizado_geo)
+
+grafico_bruto_geo <- ggplot(df_taxas_padronizadas_geo, 
+                            aes(x = ANO_OBITO, y = taxa_bruta, 
+                                color = REGIAO_RESIDENCIA, 
+                                shape = REGIAO_RESIDENCIA,
+                                linetype = REGIAO_RESIDENCIA)) + 
+  geom_line(linewidth = 1, alpha = 0.7) +
+  geom_point(size = 3) +
+  
+  scale_color_manual(values = cores_geo) +
+  scale_shape_manual(values = shapes_geo) +
+  scale_linetype_manual(values = tipos_linha_geo) + 
+  
+  scale_y_continuous(limits = c(0, limite_maximo_geo * 1.05), 
+                     expand = expansion(mult = c(0, 0.05)),
+                     labels = function(x) format(x, decimal.mark = ",", scientific = FALSE)) +
+  
+  scale_x_continuous(breaks = seq(2001, 2024, by = 1)) +
+  
+  labs(title = NULL, subtitle = NULL, x = NULL, y = NULL, caption = NULL,
+       color = "Localidade:", shape = "Localidade:", linetype = "Localidade:") +
+  
+  theme_minimal() +
+  theme(
+    text = element_text(family = "sans"),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold", size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.line = element_line(color = "black"), 
+    axis.ticks = element_line(color = "black"),
+    legend.key.width = unit(2, "cm") 
+  )
+
+print(grafico_bruto_geo)
+
+df_joinpoint_brasil_obitos <- df_taxas_padronizadas %>%
+  select(ANO_OBITO, TIPO_MENCAO, taxa_bruta, se_bruta, taxa_padronizada, se_padronizada) %>%
+  pivot_wider(
+    names_from = TIPO_MENCAO,
+    values_from = c(taxa_bruta, se_bruta, taxa_padronizada, se_padronizada)
+  ) %>%
+  rename(
+    ANO = ANO_OBITO,
+    
+    TAXA_BRUTA_TOTAL_BRASIL = `taxa_bruta_Mortalidade Total (Básica + Associada)`,
+    SE_BRUTA_TOTAL_BRASIL   = `se_bruta_Mortalidade Total (Básica + Associada)`,
+    TAXA_PAD_TOTAL_BRASIL   = `taxa_padronizada_Mortalidade Total (Básica + Associada)`,
+    SE_PAD_TOTAL_BRASIL     = `se_padronizada_Mortalidade Total (Básica + Associada)`,
+    
+    TAXA_BRUTA_BASICA_BRASIL = `taxa_bruta_Causa Básica`,
+    SE_BRUTA_BASICA_BRASIL   = `se_bruta_Causa Básica`,
+    TAXA_PAD_BASICA_BRASIL   = `taxa_padronizada_Causa Básica`,
+    SE_PAD_BASICA_BRASIL     = `se_padronizada_Causa Básica`,
+    
+    TAXA_BRUTA_ASSOCIADA_BRASIL = `taxa_bruta_Causa Associada`,
+    SE_BRUTA_ASSOCIADA_BRASIL   = `se_bruta_Causa Associada`,
+    TAXA_PAD_ASSOCIADA_BRASIL   = `taxa_padronizada_Causa Associada`,
+    SE_PAD_ASSOCIADA_BRASIL     = `se_padronizada_Causa Associada`
+  )
+
+df_joinpoint_regioes_obitos <- df_taxas_padronizadas_geo %>%
+  filter(REGIAO_RESIDENCIA != "Brasil") %>%
+  select(ANO_OBITO, REGIAO_RESIDENCIA, taxa_bruta, se_bruta, taxa_padronizada, se_padronizada) %>%
+  pivot_wider(
+    names_from = REGIAO_RESIDENCIA,
+    values_from = c(taxa_bruta, se_bruta, taxa_padronizada, se_padronizada)
+  ) %>%
+  rename(
+    ANO = ANO_OBITO,
+    TAXA_BRUTA_NORTE     = taxa_bruta_Norte,
+    SE_BRUTA_NORTE       = se_bruta_Norte,
+    TAXA_PAD_NORTE       = taxa_padronizada_Norte,
+    SE_PAD_NORTE         = se_padronizada_Norte,
+    
+    TAXA_BRUTA_NORDESTE  = taxa_bruta_Nordeste,
+    SE_BRUTA_NORDESTE    = se_bruta_Nordeste,
+    TAXA_PAD_NORDESTE    = taxa_padronizada_Nordeste,
+    SE_PAD_NORDESTE      = se_padronizada_Nordeste,
+    
+    TAXA_BRUTA_SUDESTE   = taxa_bruta_Sudeste,
+    SE_BRUTA_SUDESTE     = se_bruta_Sudeste,
+    TAXA_PAD_SUDESTE     = taxa_padronizada_Sudeste,
+    SE_PAD_SUDESTE       = se_padronizada_Sudeste,
+    
+    TAXA_BRUTA_SUL       = taxa_bruta_Sul,
+    SE_BRUTA_SUL         = se_bruta_Sul,
+    TAXA_PAD_SUL         = taxa_padronizada_Sul,
+    SE_PAD_SUL           = se_padronizada_Sul,
+    
+    TAXA_BRUTA_CENTRO_OESTE = `taxa_bruta_Centro-Oeste`,
+    SE_BRUTA_CENTRO_OESTE   = `se_bruta_Centro-Oeste`,
+    TAXA_PAD_CENTRO_OESTE   = `taxa_padronizada_Centro-Oeste`,
+    SE_PAD_CENTRO_OESTE     = `se_padronizada_Centro-Oeste`
+  )
+
+df_joinpoint_obitos_final <- df_joinpoint_brasil_obitos %>%
+  left_join(df_joinpoint_regioes_obitos, by = "ANO")
+
+glimpse(df_joinpoint_obitos_final)
+
+# --- Exportação feita no console na execução original (reconstruída: nomes dos
+# arquivos e objetos conferidos com as saídas usadas na dissertação) ---
+# Figuras 8 e 9:
+ggplot2::ggsave(filename = "Fig1_Taxas_Padronizadas_Brasil.png", plot = grafico_4, width = 25, height = 15,
+                units = "cm", dpi = 600, bg = "white")
+ggplot2::ggsave(filename = "Fig2_Taxas_Brutas_Brasil.png", plot = grafico_bruto, width = 25, height = 15,
+                units = "cm", dpi = 600, bg = "white")
+ggplot2::ggsave(filename = "Fig3_Taxas_Padronizadas_Regioes.png", plot = grafico_padronizado_geo, width = 25, height = 15,
+                units = "cm", dpi = 600, bg = "white")
+ggplot2::ggsave(filename = "Fig4_Taxas_Brutas_Regioes.png", plot = grafico_bruto_geo, width = 25, height = 15,
+                units = "cm", dpi = 600, bg = "white")
+# Entrada do Joinpoint (taxas padronizadas e erros-padrão):
+dir.create(file.path(DIR_DADOS, "Análises/Parte 3 - Taxas e Joinpoint/Joinpoint"), recursive = TRUE, showWarnings = FALSE)
+writexl::write_xlsx(dplyr::select(df_joinpoint_obitos_final, ANO, dplyr::matches("^(TAXA|SE)_PAD_")),
+                    file.path(DIR_DADOS, "Análises/Parte 3 - Taxas e Joinpoint/Joinpoint", "Taxas_Joinpoint_MORTALIDADE_SE_2001_2024.xlsx"))

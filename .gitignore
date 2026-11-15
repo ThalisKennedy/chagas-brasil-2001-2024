@@ -1,0 +1,34 @@
+# Dados: nunca vão para o repositório (ver dados/LEIA-ME.md)
+dados/*
+!dados/LEIA-ME.md
+
+# Formatos de dados e saídas, em qualquer pasta
+*.rds
+*.RData
+*.rda
+*.dta
+*.dbc
+*.dbf
+*.csv
+*.xlsx
+*.xls
+*.parquet
+*.gpkg
+*.shp
+*.shx
+*.prj
+*.cpg
+*.tif
+*.tiff
+*.png
+
+# Credenciais (PDD/CIDACS e outras)
+*credenciais*
+*.json
+.env
+
+# R / RStudio
+.Rhistory
+.Rproj.user/
+.RDataTmp*
+__pycache__/

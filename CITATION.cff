@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "Se usar estes scripts, cite-os como indicado abaixo."
+title: "Scripts de processamento e análise: epidemiologia da doença de Chagas no Brasil, 2001-2024"
+type: software
+authors:
+  - family-names: Araujo
+    given-names: Thalis Kennedy Azevedo de
+    affiliation: "Faculdade de Medicina, Universidade de São Paulo"
+version: "1.0"
+license: MIT
+abstract: >-
+  Scripts em R, Stata e Python da dissertação de mestrado "Epidemiologia da
+  doença de Chagas no Brasil: dinâmica espaço-temporal e determinantes sociais
+  da saúde" (Faculdade de Medicina da Universidade de São Paulo, 2026):
+  tratamento das bases do SIM, do SINAN e do e-SUS Notifica, completude, taxas
+  padronizadas, análise espacial, fatores associados e série temporal
+  interrompida, 2001-2024. O repositório contém apenas código; os dados devem
+  ser obtidos nas fontes indicadas no README.
+keywords:
+  - doença de Chagas
+  - epidemiologia
+  - análise espacial
+  - determinantes sociais da saúde
+  - série temporal interrompida
+  - Brasil
